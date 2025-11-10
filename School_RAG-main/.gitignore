@@ -1,31 +1,48 @@
-# Python project ignore rules
-# Python cache
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Virtual environment
+# Virtual environments
 venv/
-.venv/
-
-# VS Code settings
-.vscode/
-
-# OS junk
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
+ENV/
+env/
+.venv
 
 # Environment variables
 .env
-.env.*
+.env.local
 
-# Build outputs
-dist/
-build/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Jupyter checkpoints
-.ipynb_checkpoints/
+# Output files
+output/
+*.json
+*.parquet
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db
