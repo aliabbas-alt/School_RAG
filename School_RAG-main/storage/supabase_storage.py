@@ -112,7 +112,10 @@ class SupabaseVectorStore:
                 "school_id": doc_metadata.school_id,
                 "curriculum_type": doc_metadata.curriculum_type,
                 "document_type": doc_metadata.document_type,
-                "academic_year": doc_metadata.academic_year
+                "academic_year": doc_metadata.academic_year,
+                "content_type": chunk_meta.get("content_type", "text"),
+                "source_type": chunk_meta.get("source_type", "pdf_text_extraction"),
+                "image_path": chunk_meta.get("image_path")
             }
             records.append(record)
             
