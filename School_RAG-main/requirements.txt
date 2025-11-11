@@ -11,3 +11,7 @@ pandas>=2.0.0
 pyarrow>=11.0.0
 pypdf>=3.0.0
 pdfminer.six>=20221105
+
+# NEW: Vision processing
+PyMuPDF>=1.23.0
+pillow>=10.0.0
