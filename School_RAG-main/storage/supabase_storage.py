@@ -1,7 +1,7 @@
 # storage/supabase_storage.py
 """
 Supabase vector storage implementation for school document embeddings.
-Integrates with existing document processing pipeline.
+Enhanced with grade and subject tracking for educational content.
 """
 
 from __future__ import annotations
@@ -12,13 +12,16 @@ from dataclasses import dataclass, asdict
 from supabase import create_client, Client
 import json
 
+
 @dataclass
 class DocumentMetadata:
-    """Extended metadata for school management system."""
+    """Extended metadata for school management system with grade and subject."""
     school_id: Optional[int] = None
     curriculum_type: Optional[str] = None  # CBSE, SSE, ICSE, IB, etc.
     document_type: Optional[str] = None  # curriculum, policy, handbook, syllabus
     academic_year: Optional[str] = None  # e.g., "2025-26"
+    grade: Optional[int] = None  # Grade level: 1-12
+    subject: Optional[str] = None  # English, Math, Physics, Chemistry, etc.
     custom_metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -32,7 +35,7 @@ class SupabaseVectorStore:
     
     Features:
     - Batch embedding storage with metadata
-    - Similarity search with multiple filters
+    - Similarity search with grade/subject filters
     - Document management (delete, stats)
     - Multi-tenant support for schools
     """
@@ -68,11 +71,12 @@ class SupabaseVectorStore:
     ) -> List[int]:
         """
         Store document chunks with their embeddings in Supabase.
+        Includes grade and subject metadata.
         
         Args:
             chunks: List of chunk dictionaries with 'page_content' and 'metadata'
             embeddings: List of embedding vectors (one per chunk)
-            doc_metadata: School-specific metadata for all chunks
+            doc_metadata: School-specific metadata including grade and subject
             
         Returns:
             List of inserted document IDs
@@ -100,7 +104,7 @@ class SupabaseVectorStore:
             }
             
             # Remove fields that have dedicated columns
-            for field in ['source', 'page']:
+            for field in ['source', 'page', 'content_type', 'source_type', 'image_path']:
                 combined_metadata.pop(field, None)
             
             record = {
@@ -113,6 +117,8 @@ class SupabaseVectorStore:
                 "curriculum_type": doc_metadata.curriculum_type,
                 "document_type": doc_metadata.document_type,
                 "academic_year": doc_metadata.academic_year,
+                "grade": doc_metadata.grade,  # NEW
+                "subject": doc_metadata.subject,  # NEW
                 "content_type": chunk_meta.get("content_type", "text"),
                 "source_type": chunk_meta.get("source_type", "pdf_text_extraction"),
                 "image_path": chunk_meta.get("image_path")
@@ -146,10 +152,12 @@ class SupabaseVectorStore:
         school_id: Optional[int] = None,
         curriculum_type: Optional[str] = None,
         document_type: Optional[str] = None,
-        academic_year: Optional[str] = None
+        academic_year: Optional[str] = None,
+        grade: Optional[int] = None,  # NEW
+        subject: Optional[str] = None  # NEW
     ) -> List[Dict[str, Any]]:
         """
-        Perform similarity search on stored embeddings.
+        Perform similarity search on stored embeddings with grade/subject filters.
         
         Args:
             query_embedding: Query vector to search for
@@ -159,11 +167,21 @@ class SupabaseVectorStore:
             curriculum_type: Filter by curriculum (None = all)
             document_type: Filter by document type (None = all)
             academic_year: Filter by academic year (None = all)
+            grade: Filter by grade level (None = all grades)
+            subject: Filter by subject (None = all subjects)
             
         Returns:
             List of matching documents with similarity scores
         """
-        print(f"🔍 Searching with threshold={match_threshold}, limit={match_count}")
+        # Build filter display
+        filters = []
+        if grade:
+            filters.append(f"Grade {grade}")
+        if subject:
+            filters.append(subject)
+        
+        filter_str = f" [{', '.join(filters)}]" if filters else ""
+        print(f"🔍 Searching{filter_str} with threshold={match_threshold}, limit={match_count}")
         
         try:
             response = self.client.rpc(
@@ -175,7 +193,9 @@ class SupabaseVectorStore:
                     "filter_school_id": school_id,
                     "filter_curriculum": curriculum_type,
                     "filter_document_type": document_type,
-                    "filter_academic_year": academic_year
+                    "filter_academic_year": academic_year,
+                    "filter_grade": grade,  # NEW
+                    "filter_subject": subject  # NEW
                 }
             ).execute()
             
@@ -222,14 +242,18 @@ class SupabaseVectorStore:
     def get_document_stats(
         self,
         school_id: Optional[int] = None,
-        curriculum_type: Optional[str] = None
+        curriculum_type: Optional[str] = None,
+        grade: Optional[int] = None,  # NEW
+        subject: Optional[str] = None  # NEW
     ) -> Dict[str, Any]:
         """
-        Get statistics about stored documents.
+        Get statistics about stored documents with grade/subject filters.
         
         Args:
             school_id: Optional school ID filter
             curriculum_type: Optional curriculum filter
+            grade: Optional grade filter
+            subject: Optional subject filter
             
         Returns:
             Dictionary with document statistics
@@ -239,7 +263,9 @@ class SupabaseVectorStore:
                 "get_document_stats",
                 {
                     "filter_school_id": school_id,
-                    "filter_curriculum": curriculum_type
+                    "filter_curriculum": curriculum_type,
+                    "filter_grade": grade,  # NEW
+                    "filter_subject": subject  # NEW
                 }
             ).execute()
             
@@ -253,7 +279,9 @@ class SupabaseVectorStore:
     def list_sources(
         self,
         school_id: Optional[int] = None,
-        curriculum_type: Optional[str] = None
+        curriculum_type: Optional[str] = None,
+        grade: Optional[int] = None,  # NEW
+        subject: Optional[str] = None  # NEW
     ) -> List[Dict[str, Any]]:
         """
         List all unique source documents with their chunk counts.
@@ -261,16 +289,24 @@ class SupabaseVectorStore:
         Args:
             school_id: Optional school ID filter
             curriculum_type: Optional curriculum filter
+            grade: Optional grade filter
+            subject: Optional subject filter
             
         Returns:
             List of source documents with metadata
         """
-        query = self.client.table("documents").select("source, school_id, curriculum_type, document_type, academic_year")
+        query = self.client.table("documents").select(
+            "source, school_id, curriculum_type, document_type, academic_year, grade, subject"
+        )
         
         if school_id is not None:
             query = query.eq("school_id", school_id)
         if curriculum_type is not None:
             query = query.eq("curriculum_type", curriculum_type)
+        if grade is not None:
+            query = query.eq("grade", grade)
+        if subject is not None:
+            query = query.eq("subject", subject)
         
         response = query.execute()
         
@@ -286,6 +322,8 @@ class SupabaseVectorStore:
                         'curriculum_type': row['curriculum_type'],
                         'document_type': row['document_type'],
                         'academic_year': row['academic_year'],
+                        'grade': row.get('grade'),
+                        'subject': row.get('subject'),
                         'chunk_count': 0
                     }
                 sources[source]['chunk_count'] += 1

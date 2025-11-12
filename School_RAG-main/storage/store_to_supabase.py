@@ -1,6 +1,6 @@
 # storage/store_to_supabase.py
 """
-Main script for storing document embeddings in Supabase.
+Main script for storing document embeddings in Supabase with grade/subject metadata.
 Run after processing PDFs with run_parse.py.
 """
 
@@ -19,7 +19,7 @@ load_dotenv()
 
 
 def main():
-    """Interactive script for storing embeddings in Supabase."""
+    """Interactive script for storing embeddings with grade and subject metadata."""
     print("="*70)
     print("  SUPABASE EMBEDDING STORAGE FOR SCHOOL DOCUMENTS")
     print("="*70)
@@ -52,12 +52,30 @@ def main():
         print("❌ ERROR: Curriculum type is required")
         return
     
-    # Step 3: Document metadata
+    # Step 3: Document metadata with grade and subject
     print("\n📚 Step 3: Enter Document Metadata")
     print("-" * 70)
     
-    document_type = input("Document Type [curriculum]: ").strip() or "curriculum"
+    document_type = input("Document Type [textbook]: ").strip() or "textbook"
     academic_year = input("Academic Year [2025-26]: ").strip() or "2025-26"
+    
+    # NEW: Grade input
+    grade_input = input("Grade Level (1-12): ").strip()
+    grade = None
+    if grade_input:
+        try:
+            grade = int(grade_input)
+            if grade < 1 or grade > 12:
+                print("⚠️  Warning: Grade should be between 1-12, but continuing anyway...")
+        except ValueError:
+            print("❌ ERROR: Grade must be a number")
+            return
+    
+    # NEW: Subject input
+    subject = input("Subject (Math/Physics/Chemistry/English/etc): ").strip().title()
+    if not subject:
+        print("❌ ERROR: Subject is required")
+        return
     
     # Step 4: Confirmation
     print("\n" + "="*70)
@@ -68,6 +86,8 @@ def main():
     print(f"📖 Curriculum:      {curriculum_type}")
     print(f"📚 Document Type:   {document_type}")
     print(f"📅 Academic Year:   {academic_year}")
+    print(f"🎓 Grade:           {grade if grade else 'Not specified'}")
+    print(f"📖 Subject:         {subject}")
     print("="*70)
     
     confirm = input("\n⚠️  Proceed with storage? (yes/no): ").strip().lower()
@@ -86,6 +106,8 @@ def main():
             curriculum_type=curriculum_type,
             document_type=document_type,
             academic_year=academic_year,
+            grade=grade,  # NEW
+            subject=subject,  # NEW
             provider_name="openai",
             model="text-embedding-3-small",
             dimensions=None  # Use default 1536
@@ -96,6 +118,8 @@ def main():
         print("  ✅ STORAGE SUCCESSFUL!")
         print("="*70)
         print(f"📊 Chunks Stored:     {result['inserted_count']}")
+        print(f"🎓 Grade:             {grade if grade else 'N/A'}")
+        print(f"📖 Subject:           {subject}")
         print(f"🔮 Model Used:        {result['embedding_model']}")
         print(f"📏 Dimensions:        {result['embedding_dimension']}")
         print(f"🆔 First Record ID:   {result['inserted_ids'][0]}")
@@ -103,10 +127,14 @@ def main():
         print("="*70)
         
         # Show database statistics
-        print("\n📈 Database Statistics (for your school):")
+        print("\n📈 Database Statistics:")
         print("-" * 70)
         vector_store = SupabaseVectorStore()
-        stats = vector_store.get_document_stats(school_id=school_id)
+        stats = vector_store.get_document_stats(
+            school_id=school_id,
+            grade=grade,
+            subject=subject
+        )
         
         print(f"Total Documents:      {stats.get('total_documents', 0)}")
         print(f"Total Chunks:         {stats.get('total_chunks', 0)}")
@@ -114,7 +142,7 @@ def main():
         print("="*70)
         
         print("\n✅ Your embeddings are now searchable in Supabase!")
-        print("   You can now use similarity search to query this data.")
+        print(f"   Search filtered by: Grade {grade} | {subject}")
         
     except Exception as e:
         print("\n" + "="*70)
