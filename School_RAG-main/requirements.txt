@@ -15,3 +15,4 @@ pdfminer.six>=20221105
 # NEW: Vision processing
 PyMuPDF>=1.23.0
 pillow>=10.0.0
+sympy>=1.14.0

@@ -84,8 +84,96 @@ def main():
         if not os.path.exists(pdf_path):
             print(f"Error: File not found: {pdf_path}\n")
             continue
+
+        # Ask about math mode FIRST
+        use_math_input = input("Process as Math document? (y/n) [n]: ").strip().lower()
+        use_math = (use_math_input == "y")
+
+        if use_math:
+            # Route into math_parser only — skip other options
+            from math_parser import process_math_pdf, process_math_images, default_output_name
+
+            use_unstructured = False
+            chunk_size, chunk_overlap = 900, 180
+
+            print(f"\n{'='*70}")
+            print("STEP 1: MATH TEXT EXTRACTION")
+            print(f"{'='*70}")
+
+            math_chunks = process_math_pdf(pdf_path, use_unstructured, chunk_size, chunk_overlap)
+            vision_chunks = process_math_images(pdf_path)
+
+            all_chunks = math_chunks + vision_chunks
+
+            print(f"\n{'='*70}")
+            print("SUMMARY (MATH MODE)")
+            print(f"{'='*70}")
+            print(f"Text chunks:   {len(math_chunks)}")
+            print(f"Image chunks:  {len(vision_chunks)}")
+            print(f"Total chunks:  {len(all_chunks)}")
+            print(f"{'='*70}")
+
+            # Preview
+            preview = input("\nPreview first 3 chunks? (y/n) [n]: ").strip().lower()
+            if preview == "y":
+                for i, c in enumerate(all_chunks[:3], 1):
+                    print(f"\n--- Chunk {i} ---")
+                    print(f"Type: {c['metadata'].get('content_type', 'text')}")
+                    print(f"Page: {c['metadata'].get('page')}")
+                    print(f"Content: {c['page_content'][:200]}...\n")
+
+            # Save
+            output_name = default_output_name(pdf_path)
+            output_path = input(f"Output file [{output_name}]: ").strip() or output_name
+
+            payload = {
+                "source_pdf": os.path.basename(pdf_path),
+                "loader": "math_parser",
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "vision_processing": True,
+                "text_chunks": len(math_chunks),
+                "image_chunks": len(vision_chunks),
+                "total_chunks": len(all_chunks),
+                "chunks": all_chunks,
+                "mode": "math"
+            }
+
+            try:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+
+                print(f"\n✅ Saved {len(all_chunks)} math chunks to {output_path}")
+                print("\n📥 Next step: Upload to Supabase")
+                print(f"   python storage/store_to_supabase.py")
+                print(f"   Then enter: {output_path}\n")
+
+            except Exception as e:
+                print(f"Error saving file: {e}\n")
+
+            continue  # Skip normal text+vision flow
+
+        # --- Normal text + vision flow (unchanged) ---
+        use_vision_input = input("Process images with GPT-4 Vision? (y/n) [n]: ").strip().lower()
+        use_vision = (use_vision_input == "y")
+
+        use_unstructured_input = input("Use UnstructuredPDFLoader? (y/n) [n]: ").strip().lower()
+        use_unstructured = (use_unstructured_input == "y")
+
+        try:
+            chunk_size_input = input("Enter chunk size (default 900): ").strip()
+            chunk_size = int(chunk_size_input) if chunk_size_input else 900
+
+            chunk_overlap_input = input("Enter chunk overlap (default 180): ").strip()
+            chunk_overlap = int(chunk_overlap_input) if chunk_overlap_input else 180
+        except ValueError:
+            print("Invalid input for chunk size or overlap. Using defaults.\n")
+            chunk_size = 900
+            chunk_overlap = 180
+
+
         
-        # Ask about vision processing FIRST
+        # Ask about vision processing
         use_vision_input = input("Process images with GPT-4 Vision? (y/n) [n]: ").strip().lower()
         use_vision = (use_vision_input == "y")
         
