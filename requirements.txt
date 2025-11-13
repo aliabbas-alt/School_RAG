@@ -1,0 +1,17 @@
+# Minimal required packages
+python-dotenv>=1.0.0
+langchain-openai>=0.1.0
+langchain-core>=0.1.0
+supabase>=2.0.0
+
+# Existing packages (keep these)
+langchain-community>=0.0.20
+langchain-text-splitters>=0.0.1
+pandas>=2.0.0
+pyarrow>=11.0.0
+pypdf>=3.0.0
+pdfminer.six>=20221105
+
+# NEW: Vision processing
+PyMuPDF>=1.23.0
+pillow>=10.0.0
