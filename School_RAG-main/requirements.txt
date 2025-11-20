@@ -1,3 +1,5 @@
+# requirements.txt - YOUR ORIGINAL (CORRECT VERSION)
+
 # Minimal required packages
 python-dotenv>=1.0.0
 langchain-openai>=0.1.0

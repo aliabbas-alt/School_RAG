@@ -1,417 +1,282 @@
 # run_agent.py
 """
-Enhanced Q&A system with advanced conversation memory and grade/subject awareness.
-Multimodal RAG: Text + Vision-based image descriptions + Grade/Subject filtering.
-Features: Entity tracking, smart context, query classification, automatic filtering.
+Production-Ready School RAG Agent for Indian School Management System
+
+Features:
+- Advanced conversation memory with attention mechanism & temporal weighting
+- School data isolation for multi-tenancy
+- Grade/Subject automatic filtering
+- Hybrid search (keyword + semantic with RRF)
+- Episode tracking (study sessions)
+- Session persistence and analytics
+- Comprehensive error handling
+- Works with LangChain 1.0+
+
+Supports: CBSE, SSE, ICSE, IB, and other Indian curricula
 """
 
 import os
-import re
 import json
-from typing import List, Dict, Set, Optional
-from collections import Counter
+import logging
+from typing import Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
+
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
-from supabase_tool import search_school_documents
 
-# Load environment variables
+from supabase_tool import search_school_documents, get_search_engine
+from memory.conversation_memory import EnhancedConversationMemory  # ← USES NEW ADVANCED MEMORY
+
+# Load environment
 load_dotenv()
 
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-class EnhancedConversationMemory:
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# SCHOOL RAG AGENT
+# ============================================================================
+
+class SchoolRAGAgent:
     """
-    Advanced conversation memory with topic tracking, entity recognition,
-    and smart summarization for educational RAG systems.
+    Production-ready RAG agent for Indian School Management System.
+    
+    Features:
+    - Advanced conversation memory with attention mechanism
+    - Temporal weighting (recent + relevant)
+    - Episode tracking (study sessions)
+    - Multi-hop concept reasoning
+    - School data isolation
+    - Grade/Subject automatic filtering
+    - Session persistence
+    - Comprehensive error handling
+    
+    Supports: CBSE, SSE, ICSE, IB, and other curricula
     """
     
-    def __init__(self, max_history: int = 15, max_context_tokens: int = 2000):
+    def __init__(
+        self,
+        school_id: str,
+        model: str = "gpt-4o-mini",
+        temperature: float = 0.2
+    ):
         """
-        Initialize enhanced memory.
+        Initialize School RAG Agent.
         
         Args:
-            max_history: Maximum interactions to store
-            max_context_tokens: Max tokens for context (approximate)
+            school_id: School ID for data isolation (REQUIRED)
+            model: LLM model to use
+            temperature: LLM temperature (0-1)
         """
-        self.max_history = max_history
-        self.max_context_tokens = max_context_tokens
-        self.history = []
-        self.session_start = datetime.now()
+        self.school_id = school_id
+        self.memory = EnhancedConversationMemory(max_history=15)  # ← NEW ADVANCED MEMORY
+        self.llm = ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
         
-        # Enhanced tracking
-        self.topics_discussed: Set[str] = set()
-        self.pages_mentioned: Set[int] = set()
-        self.subjects_discussed: Set[str] = set()
-        self.grades_discussed: Set[int] = set()  # NEW
-        self.question_count = 0
-        self.clarification_count = 0
-    
-    def extract_entities(self, text: str) -> Dict[str, List]:
-        """Extract educational entities from text including grades."""
-        entities = {
-            "pages": [],
-            "subjects": [],
-            "grades": [],  # NEW
-            "topics": [],
-            "chapters": []
-        }
-        
-        # Extract page numbers
-        page_pattern = r'\bpage\s+(\d+)\b|\bp\.?\s*(\d+)\b'
-        pages = re.findall(page_pattern, text.lower())
-        for match in pages:
-            page_num = int(match[0] or match[1])
-            entities["pages"].append(page_num)
-            self.pages_mentioned.add(page_num)
-        
-        # Extract grades (NEW)
-        grade_pattern = r'\bgrade\s+(\d+)\b|\bclass\s+(\d+)\b'
-        grades = re.findall(grade_pattern, text.lower())
-        for match in grades:
-            grade_num = int(match[0] or match[1])
-            if 1 <= grade_num <= 12:
-                entities["grades"].append(grade_num)
-                self.grades_discussed.add(grade_num)
-        
-        # Extract subjects (basic keyword matching)
-        subjects = ["math", "physics", "chemistry", "biology", "english", 
-                   "history", "geography", "computer", "science"]
-        for subject in subjects:
-            if subject in text.lower():
-                entities["subjects"].append(subject)
-                self.subjects_discussed.add(subject)
-        
-        # Extract chapter numbers
-        chapter_pattern = r'\bchapter\s+(\d+)\b|\bch\.?\s*(\d+)\b'
-        chapters = re.findall(chapter_pattern, text.lower())
-        for match in chapters:
-            entities["chapters"].append(int(match[0] or match[1]))
-        
-        return entities
-    
-    def classify_query_type(self, query: str) -> str:
-        """Classify the type of user query."""
-        query_lower = query.lower()
-        
-        if any(word in query_lower for word in ["what", "define", "explain"]):
-            return "explanation"
-        elif any(word in query_lower for word in ["how", "steps", "process"]):
-            return "procedural"
-        elif any(word in query_lower for word in ["image", "diagram", "picture", "figure"]):
-            return "visual"
-        elif any(word in query_lower for word in ["list", "all", "show me"]):
-            return "aggregation"
-        elif query_lower.startswith(("can", "could", "would")):
-            self.clarification_count += 1
-            return "clarification"
-        else:
-            return "general"
-    
-    def add_interaction(
-        self, 
-        user_query: str, 
-        assistant_response: str,
-        search_results_count: int = 0
-    ):
-        """Add interaction with enhanced metadata."""
-        
-        # Extract entities
-        query_entities = self.extract_entities(user_query)
-        response_entities = self.extract_entities(assistant_response)
-        
-        # Classify query
-        query_type = self.classify_query_type(user_query)
-        
-        # Update topic tracking
-        if query_entities["subjects"]:
-            self.topics_discussed.update(query_entities["subjects"])
-        
-        # Create interaction record
-        interaction = {
-            "timestamp": datetime.now().isoformat(),
-            "user": user_query,
-            "assistant": assistant_response,
-            "query_type": query_type,
-            "entities": query_entities,
-            "search_results": search_results_count,
-            "turn_number": len(self.history) + 1
-        }
-        
-        self.history.append(interaction)
-        self.question_count += 1
-        
-        # Trim if exceeds max
-        if len(self.history) > self.max_history:
-            # Keep first and recent interactions
-            self.history = [self.history[0]] + self.history[-(self.max_history-1):]
-    
-    def get_context(self, last_n: int = 3, prioritize_recent: bool = True) -> str:
-        """Get conversation context with smart filtering."""
-        if not self.history:
-            return "No previous conversation."
-        
-        # Get relevant interactions
-        if prioritize_recent:
-            relevant = self.history[-last_n:]
-        else:
-            relevant = self.history[:last_n]
-        
-        context_parts = ["=== Conversation Context ==="]
-        
-        # Add session metadata
-        if self.pages_mentioned:
-            pages_str = ", ".join(map(str, sorted(self.pages_mentioned)[-5:]))
-            context_parts.append(f"Pages discussed: {pages_str}")
-        
-        if self.grades_discussed:  # NEW
-            context_parts.append(f"Grades: {', '.join(map(str, sorted(self.grades_discussed)))}")
-        
-        if self.subjects_discussed:
-            context_parts.append(f"Subjects: {', '.join(self.subjects_discussed)}")
-        
-        context_parts.append("")
-        
-        # Add recent interactions
-        for i, interaction in enumerate(relevant, 1):
-            turn = interaction['turn_number']
-            query_type = interaction.get('query_type', 'general')
-            
-            context_parts.append(f"Turn {turn} [{query_type}]:")
-            context_parts.append(f"User: {interaction['user']}")
-            
-            # Summarize long responses
-            response = interaction['assistant']
-            if len(response) > 200:
-                response = response[:200] + "... [continued]"
-            context_parts.append(f"Assistant: {response}")
-            context_parts.append("")
-        
-        return "\n".join(context_parts)
-    
-    def get_relevant_entities(self) -> str:
-        """Get summary of entities discussed."""
-        entities_summary = []
-        
-        if self.pages_mentioned:
-            pages = sorted(self.pages_mentioned)
-            if len(pages) <= 5:
-                entities_summary.append(f"Pages: {', '.join(map(str, pages))}")
-            else:
-                entities_summary.append(f"Pages: {pages[0]}-{pages[-1]} (and {len(pages)-2} others)")
-        
-        if self.grades_discussed:  # NEW
-            grades_str = ', '.join(map(str, sorted(self.grades_discussed)))
-            entities_summary.append(f"Grades: {grades_str}")
-        
-        if self.subjects_discussed:
-            entities_summary.append(f"Subjects: {', '.join(self.subjects_discussed)}")
-        
-        return " | ".join(entities_summary) if entities_summary else "No specific entities tracked"
-    
-    def get_summary(self) -> str:
-        """Enhanced conversation summary."""
-        if not self.history:
-            return "No conversation yet."
-        
-        duration = (datetime.now() - self.session_start).seconds // 60
-        
-        # Count query types
-        query_types = Counter(i.get('query_type', 'general') for i in self.history)
-        most_common_type = query_types.most_common(1)[0] if query_types else ("general", 0)
-        
-        return f"""📊 Conversation Summary:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Session Duration: {duration} minutes
-Total Interactions: {len(self.history)}
-Questions Asked: {self.question_count}
-Clarifications: {self.clarification_count}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Most Common Query Type: {most_common_type[0]} ({most_common_type[1]} times)
-{self.get_relevant_entities()}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-First Query: {self.history[0]['user'][:50]}...
-Last Query: {self.history[-1]['user'][:50]}..."""
-    
-    def get_smart_context_for_query(self, current_query: str) -> str:
-        """
-        Generate context specifically relevant to current query.
-        Uses entity overlap to prioritize relevant history.
-        """
-        if not self.history:
-            return self.get_context(last_n=2)
-        
-        # Extract entities from current query
-        current_entities = self.extract_entities(current_query)
-        
-        # Find relevant past interactions
-        relevant_interactions = []
-        
-        for interaction in reversed(self.history[-10:]):  # Check last 10
-            past_entities = interaction.get('entities', {})
-            
-            # Check for entity overlap
-            page_overlap = bool(set(current_entities['pages']) & set(past_entities.get('pages', [])))
-            subject_overlap = bool(set(current_entities['subjects']) & set(past_entities.get('subjects', [])))
-            grade_overlap = bool(set(current_entities['grades']) & set(past_entities.get('grades', [])))  # NEW
-            
-            if page_overlap or subject_overlap or grade_overlap:
-                relevant_interactions.append(interaction)
-            
-            if len(relevant_interactions) >= 3:
-                break
-        
-        # If no relevant history, use recent
-        if not relevant_interactions:
-            return self.get_context(last_n=2)
-        
-        # Format relevant context
-        context_parts = ["=== Relevant Context ==="]
-        context_parts.append(self.get_relevant_entities())
-        context_parts.append("")
-        
-        for interaction in relevant_interactions:
-            turn = interaction['turn_number']
-            context_parts.append(f"Turn {turn}:")
-            context_parts.append(f"Q: {interaction['user']}")
-            context_parts.append(f"A: {interaction['assistant'][:150]}...")
-            context_parts.append("")
-        
-        return "\n".join(context_parts)
-    
-    def clear(self):
-        """Reset memory."""
-        self.history = []
-        self.topics_discussed.clear()
-        self.pages_mentioned.clear()
-        self.subjects_discussed.clear()
-        self.grades_discussed.clear()  # NEW
-        self.question_count = 0
-        self.clarification_count = 0
-        self.session_start = datetime.now()
-    
-    def save_session(self, filepath: str):
-        """Save session with metadata."""
-        session_data = {
-            "metadata": {
-                "session_start": self.session_start.isoformat(),
-                "session_end": datetime.now().isoformat(),
-                "total_interactions": len(self.history),
-                "topics_discussed": list(self.topics_discussed),
-                "pages_mentioned": sorted(list(self.pages_mentioned)),
-                "subjects_discussed": list(self.subjects_discussed),
-                "grades_discussed": sorted(list(self.grades_discussed))  # NEW
-            },
-            "history": self.history
-        }
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(session_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"✅ Session saved to {filepath}")
+        # System prompt
+        self.system_prompt = """You are an intelligent educational assistant for an Indian school management system.
+You help students, teachers, and administrators with questions about textbooks, curriculum, policies, and procedures.
 
-
-def create_qa_system():
-    """Create Q&A system with LLM and enhanced system prompt."""
-    
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
-    
-    system_prompt = """You are an intelligent educational assistant for a school management system.
-
-You have access to a comprehensive database containing:
+**Database Contents:**
 - Textbook content organized by GRADE (1-12) and SUBJECT
-- Text AND detailed AI-generated image descriptions
-- School policies, handbooks, and guidelines
+- Complete text + AI-generated image descriptions
+- School policies, handbooks, and procedures
 - Curriculum materials (CBSE, SSE, ICSE, IB, etc.)
-- Student and parent information
-- Academic procedures and rules
 
-**Grade & Subject Organization:**
-The database is automatically organized and filtered by:
-- Grade levels (1-12) - detected from queries like "Grade 8" or "Class 10"
-- Subjects (Math, Physics, Chemistry, Biology, English, etc.) - detected from keywords
-- You don't need to explicitly ask for filtering - it happens automatically
+**Automatic Features:**
+- Grade/Subject detection and filtering from queries
+- Hybrid search (Keyword + Semantic with RRF)
+- Vision-extracted math prioritized over OCR
+- Memory-based query enhancement with attention mechanism
+- Temporal weighting (recent + relevant prioritization)
 
-**IMPORTANT - Image Descriptions:**
-The database includes AI-generated descriptions of ALL images, diagrams, and visual elements from textbooks. These descriptions are extremely detailed, including:
-- Complete descriptions of all images on each page
-- Colors, positions, and arrangements
-- Visual elements like diagrams, charts, activities
-- Educational context and purpose
+**Instructions:**
+1. Use search results to provide accurate answers
+2. Always cite sources: [Source: filename, Page: X, Grade: Y, Subject: Z]
+3. Use conversation history to understand follow-up questions
+4. For vague queries like "example 8" or "next problem", use memory context
+5. If information not found, say so clearly - don't fabricate
+6. For curriculum questions (CBSE/SSE/ICSE/IB), respect the curriculum type
+7. Be educational, clear, and helpful"""
+    
+    def run(self, query: str) -> str:
+        """
+        Run complete RAG pipeline with advanced memory.
+        
+        Args:
+            query: User's question
+        
+        Returns:
+            Generated answer with citations
+        """
+        try:
+            logger.info(f"Processing query: {query}")
+            logger.info(f"School: {self.school_id}")
+            
+            # Get memory contexts
+            memory_dict = self.memory.get_context_for_enhancement()
+            
+            # ← CHANGED: Use attention-weighted context for best performance
+            memory_string = self.memory.get_attention_weighted_context(query, top_k=3)
+            
+            # Alternative options (uncomment to use):
+            # memory_string = self.memory.get_temporal_weighted_context(query, decay_rate=0.1)
+            # memory_string = self.memory.get_smart_context(query)
+            
+            logger.info("Searching database...")
+            
+            # Search documents with memory context and school isolation
+            search_results = search_school_documents(
+                query,
+                memory_context=memory_dict,
+                school_id=self.school_id
+            )
+            
+            logger.info("Generating response...")
+            
+            # Create user message with context
+            user_content = f"""**User Question:** {query}
 
 **Conversation Context:**
-You have access to recent conversation history with entity tracking (pages, grades, subjects). Use it to:
-- Understand follow-up questions (e.g., "What about the next page?")
-- Resolve pronouns (e.g., "Tell me more about that")
-- Maintain conversational flow across topics
-- Recognize when user returns to previously discussed topics
-- Remember grade/subject context from earlier in conversation
+{memory_string}
 
-**Automatic Search Features:**
-When users ask questions, the system automatically:
-- Detects grade level from natural language
-- Identifies subject from keywords
-- Filters results to relevant grade/subject
-- Prioritizes image descriptions for visual queries
-- Returns grade-appropriate content
+**Search Results:**
+{search_results}
 
-**Example Queries You Can Handle:**
-- "What is photosynthesis?" → Searches science content
-- "Grade 8 math chapter 3" → Filters to Grade 8 Math only
-- "Physics Grade 10 circuit diagrams" → Grade 10 Physics images
-- "Show me the images on page 16" → Retrieves page-specific content
-- "Chemistry equations" → Chemistry content with automatic filtering
-
-When answering questions:
-1. First search the database (automatic grade/subject filtering happens)
-2. Pay special attention to IMAGE_DESCRIPTION results - they contain complete visual information
-3. For image questions, provide COMPLETE descriptions from the database
-4. Use conversation history and entity context to understand follow-ups
-5. Always cite sources with [Source: filename, Page: number, Grade: X, Subject: Y]
-6. If information is not found, say so clearly
-7. Be conversational, clear, and educational
-8. Mention grade/subject context when relevant to the answer
-
-Remember: The database contains detailed descriptions of EVERY image in textbooks across all grades and subjects!"""
-
-    return llm, system_prompt
-
-
-def main():
-    """Main interactive loop with enhanced memory and grade/subject awareness."""
+Based on the search results and conversation context, provide a clear and accurate answer.
+Always cite your sources with [Source: filename, Page: X, Grade: Y]."""
+            
+            # Generate response
+            messages = [
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=user_content)
+            ]
+            
+            response = self.llm.invoke(messages)
+            answer = response.content
+            
+            # Update memory
+            self.memory.add_interaction(query, answer)
+            
+            logger.info("Response generated successfully")
+            
+            return answer
+        
+        except Exception as e:
+            logger.error(f"Error: {str(e)}", exc_info=True)
+            return f"❌ I encountered an error while processing your question: {str(e)}\n\nPlease try rephrasing or contact support."
     
+    def ask(self, query: str) -> str:
+        """Alias for run() - more intuitive for API usage."""
+        return self.run(query)
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get comprehensive metrics including memory analytics."""
+        engine = get_search_engine()
+        search_metrics = engine.get_metrics()
+        
+        return {
+            "search_metrics": search_metrics,
+            "conversation_metrics": {
+                "total_interactions": len(self.memory.history),
+                "questions_asked": self.memory.question_count,
+                "clarifications": self.memory.clarification_count,
+                "subjects_discussed": list(self.memory.subjects_discussed),
+                "grades_discussed": sorted(list(self.memory.grades_discussed)),
+                "episodes": len(self.memory.episodes),
+                "pages_referenced": len(self.memory.pages_mentioned)
+            }
+        }
+    
+    def get_memory_summary(self) -> str:
+        """Get conversation summary with analytics."""
+        return self.memory.get_summary()
+    
+    def get_episode_summary(self) -> str:
+        """Get study session summary."""
+        return self.memory.get_episode_summary()
+    
+    def get_related_concepts(self, concept: str) -> set:
+        """Get related concepts through multi-hop reasoning."""
+        return self.memory.get_related_concepts(concept, max_depth=2)
+    
+    def clear_memory(self):
+        """Clear conversation memory."""
+        self.memory.clear()
+        logger.info("Conversation memory cleared")
+    
+    def save_session(self, filepath: str = None) -> str:
+        """
+        Save conversation session with all metadata.
+        
+        Args:
+            filepath: Optional custom filepath
+        
+        Returns:
+            Path to saved file
+        """
+        if not filepath:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = f"sessions/session_{self.school_id}_{timestamp}.json"
+        
+        return self.memory.save_to_file(filepath)
+
+
+# ============================================================================
+# CLI INTERFACE
+# ============================================================================
+
+def run_cli():
+    """Interactive CLI interface with excellent UX."""
     print("="*70)
     print("  🎓 SCHOOL DOCUMENT Q&A SYSTEM")
     print("="*70)
-    print("Enhanced Multimodal RAG with Smart Memory + Grade/Subject Filtering")
+    print("Production RAG with Advanced Memory + Hybrid Search")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("Features:")
-    print("  ✓ Text + Image descriptions from textbooks")
-    print("  ✓ Automatic Grade & Subject detection and filtering")
-    print("  ✓ Entity tracking (pages, subjects, chapters, grades)")
-    print("  ✓ Smart context-aware responses")
-    print("  ✓ Query classification and analytics")
+    print("  ✓ Attention-based memory retrieval (DMN-inspired)")
+    print("  ✓ Temporal weighting (recent + relevant)")
+    print("  ✓ Episode tracking (automatic study session detection)")
+    print("  ✓ Multi-hop concept reasoning")
+    print("  ✓ Automatic Grade & Subject detection")
+    print("  ✓ Hybrid search (Keyword + Semantic with RRF)")
+    print("  ✓ School data isolation for multi-tenancy")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("\nCommands:")
     print("  'exit', 'quit', 'q' → Exit system")
     print("  'memory'           → Show conversation analytics")
+    print("  'episodes'         → Show study sessions")
+    print("  'metrics'          → Show performance metrics")
     print("  'clear'            → Reset conversation memory")
     print("  'save'             → Save session to file")
     print("\n" + "="*70)
     
+    # Get school ID
+    school_id = input("\n🏫 Enter School ID (or press Enter for demo): ").strip()
+    if not school_id:
+        school_id = "demo_school"
+        print(f"   Using demo school: {school_id}")
+    
+    # Initialize agent
     try:
-        llm, system_prompt = create_qa_system()
-        memory = EnhancedConversationMemory(max_history=15)
-        print("✅ System initialized successfully!\n")
+        agent = SchoolRAGAgent(school_id=school_id)
+        print(f"\n✅ System initialized successfully for school: {school_id}\n")
     except Exception as e:
-        print(f"❌ Error: {e}")
-        print("\nCheck your .env file has OPENAI_API_KEY")
+        print(f"\n❌ Error initializing system: {e}")
+        print("   Check your .env file has OPENAI_API_KEY")
         return
     
+    # Main loop
     while True:
         try:
             # Get user input
@@ -423,70 +288,50 @@ def main():
             # Handle commands
             if query.lower() in ["exit", "quit", "q"]:
                 print("\n👋 Goodbye!")
-                print(f"\n{memory.get_summary()}")
+                print(f"\n{agent.get_memory_summary()}")
                 
                 # Ask to save
                 save_prompt = input("\n💾 Save session? (y/n): ").strip().lower()
                 if save_prompt == 'y':
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"session_{timestamp}.json"
-                    memory.save_session(filename)
+                    filepath = agent.save_session()
+                    print(f"✅ Session saved to: {filepath}")
                 break
             
             if query.lower() == "memory":
                 print("\n" + "="*70)
-                print(memory.get_summary())
+                print(agent.get_memory_summary())
                 print("="*70)
-                print("\n" + memory.get_context(last_n=5))
+                continue
+            
+            if query.lower() == "episodes":
+                print("\n" + "="*70)
+                print(agent.get_episode_summary())
+                print("="*70)
+                continue
+            
+            if query.lower() == "metrics":
+                print("\n" + "="*70)
+                print("📊 PERFORMANCE METRICS")
+                print("="*70)
+                metrics = agent.get_metrics()
+                print(json.dumps(metrics, indent=2))
                 print("="*70)
                 continue
             
             if query.lower() == "clear":
-                memory.clear()
+                agent.clear_memory()
                 print("✅ Conversation memory cleared!")
                 continue
             
             if query.lower() == "save":
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"session_{timestamp}.json"
-                memory.save_session(filename)
+                filepath = agent.save_session()
+                print(f"✅ Session saved to: {filepath}")
                 continue
             
-            print("\n🔍 Searching database...")
+            # Process query
+            print("\n🔍 Processing your question...\n")
             
-            # Step 1: Search database (with automatic grade/subject filtering)
-            search_results = search_school_documents(query)
-            
-            # Step 2: Build context with smart memory
-            conversation_context = memory.get_smart_context_for_query(query)
-            
-            context = f"""User Question: {query}
-
-{conversation_context}
-
-Database Search Results:
-{search_results}
-
-Based on the search results above and the conversation context, provide a clear and accurate answer.
-- For image questions, provide COMPLETE descriptions from IMAGE_DESCRIPTION results
-- Use conversation history and entity tracking to understand follow-up questions
-- If user asks about "that page" or "next page", use entity context
-- Mention grade/subject when relevant to the answer
-- Always cite sources with [Source: filename, Page: X]"""
-
-            # Step 3: Get LLM response
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=context)
-            ]
-            
-            print("🤔 Generating answer...\n")
-            
-            response = llm.invoke(messages)
-            answer = response.content
-            
-            # Store in memory with metadata
-            memory.add_interaction(query, answer, search_results_count=30)
+            answer = agent.run(query)
             
             # Display answer
             print("="*70)
@@ -497,13 +342,21 @@ Based on the search results above and the conversation context, provide a clear 
         
         except KeyboardInterrupt:
             print("\n\n👋 Interrupted. Goodbye!")
-            print(f"\n{memory.get_summary()}")
+            print(f"\n{agent.get_memory_summary()}")
             break
         
         except Exception as e:
             print(f"\n❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("CLI error", exc_info=True)
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def main():
+    """Main entry point."""
+    run_cli()
 
 
 if __name__ == "__main__":
