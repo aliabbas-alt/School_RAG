@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from supabase_tool import search_school_documents
+from math_search_tool import search_math_documents
 
 # Load environment variables
 load_dotenv()
@@ -88,6 +89,37 @@ class EnhancedConversationMemory:
         for match in chapters:
             entities["chapters"].append(int(match[0] or match[1]))
         
+        return entities
+    
+    def extract_math_query_entities(self, query: str) -> dict:
+        """Extract math-specific metadata from a query."""
+        query_lower = query.lower()
+        entities = {}
+
+        # Detect exercise numbers like "Exercise 7.2"
+        ex_match = re.search(r"exercise\s+(\d+(?:\.\d+)?)", query_lower)
+        if ex_match:
+            entities["exercise_number"] = ex_match.group(1)
+
+        # Detect example numbers like "Example 5"
+        exm_match = re.search(r"example\s+(\d+)", query_lower)
+        if exm_match:
+            entities["example_number"] = exm_match.group(1)
+
+        # Detect question numbers like "Question 2"
+        q_match = re.search(r"question\s+(\d+)", query_lower)
+        if q_match:
+            entities["question_number"] = q_match.group(1)
+
+        # Detect sub-questions like "(ii)"
+        sub_match = re.search(r"\(\s*([ivx]+)\s*\)", query_lower)
+        if sub_match:
+            entities["sub_question"] = sub_match.group(1).lower()
+
+        # Detect subject
+        if "math" in query_lower or "mathematics" in query_lower:
+            entities["subject"] = "Math"
+
         return entities
     
     def classify_query_type(self, query: str) -> str:
@@ -416,10 +448,10 @@ def main():
         try:
             # Get user input
             query = input("\n💬 You: ").strip()
-            
+                          
             if not query:
                 continue
-            
+
             # Handle commands
             if query.lower() in ["exit", "quit", "q"]:
                 print("\n👋 Goodbye!")
@@ -451,12 +483,58 @@ def main():
                 filename = f"session_{timestamp}.json"
                 memory.save_session(filename)
                 continue
+
+            # Step 1: Extract entities from query
+            entities = memory.extract_math_query_entities(query)
+
+            # Step 2: Decide routing based on metadata
+            use_math_tool = False
+            if entities.get("subject") == "Math":
+                use_math_tool = True
+            elif entities.get("exercise_number") or entities.get("example_number") or entities.get("question_number"):
+                use_math_tool = True
+
+            # Step 3: Route to correct search engine
+            if use_math_tool:
+                print("Using MathSmartSearchEngine (metadata-driven)")
+                search_results = search_math_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
+            else:
+                print("Using General SmartSearchEngine")
+                search_results = search_school_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
             
             print("\n🔍 Searching database...")
             
             # Step 1: Search database (with automatic grade/subject filtering)
-            search_results = search_school_documents(query)
-            
+            # search_results = search_school_documents(query)
+            # Detect if query is math-related
+            query_lower = query.lower()
+            math_keywords = [
+                "integral", "derivative", "equation", "function", "limit", "matrix",
+                "theorem", "proof", "latex", "symbol", "expression", "solve", "graph", "math"
+            ]
+
+            if any(kw in query.lower() for kw in math_keywords):
+                print("Using MathSmartSearchEngine")
+                search_results = search_math_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
+            else:
+                print("Using General SmartSearchEngine")
+                search_results = search_school_documents(query, memory_context={...})
+        
             # Step 2: Build context with smart memory
             conversation_context = memory.get_smart_context_for_query(query)
             

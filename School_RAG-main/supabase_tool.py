@@ -21,11 +21,17 @@ from embeddings.registry import build_provider
 class SmartSearchEngine:
     """Enhanced search engine with multimodal RAG and grade/subject filtering."""
     
+    # def __init__(self):
+    #     self.vector_store = SupabaseVectorStore()
+    #     self.provider = build_provider("openai", model="text-embedding-3-small")
+        
+    #     # Search configuration
+    #     self.default_threshold = 0.25
+    #     self.default_limit = 30
+    #     self.image_boost_factor = 1.2
     def __init__(self):
         self.vector_store = SupabaseVectorStore()
-        self.provider = build_provider("openai", model="text-embedding-3-small")
-        
-        # Search configuration
+        #Search configuration
         self.default_threshold = 0.25
         self.default_limit = 30
         self.image_boost_factor = 1.2
@@ -200,9 +206,15 @@ class SmartSearchEngine:
         """
         try:
             # Build query
-            query = self.vector_store.client.table("documents")\
-                .select("*")\
+            # Subject-aware table selection
+            table_name = "math_documents" if subject and subject.lower() == "math" else "documents"
+
+            query = (
+                self.vector_store.client
+                .table(table_name)
+                .select("*")
                 .ilike("content", f"%Example {example_num}%")
+)
             
             # Add subject filter if provided
             if subject:
@@ -262,8 +274,18 @@ class SmartSearchEngine:
                 print(f"   ⚠️ No keyword results, falling back to semantic search")
         
         # Original semantic search
-        query_result = self.provider.embed_texts([query])
-        query_embedding = query_result.vectors  # FIX: was missing
+
+        # NEW: Pick provider dynamically based on subject
+        subject = intent.get("subject")
+        if subject and subject.lower() == "math":
+            provider = build_provider("openai", model="text-embedding-3-large")
+            print("   🔮 Using text-embedding-3-large for Math query")
+        else:
+            provider = build_provider("openai", model="text-embedding-3-small")
+            print("   🔮 Using text-embedding-3-small for non-Math query")
+
+        query_result = provider.embed_texts([query])
+        query_embedding = query_result.vectors
         
         # Adjust search parameters based on intent
         if intent["is_image_query"]:
