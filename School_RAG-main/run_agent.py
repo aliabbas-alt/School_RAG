@@ -413,6 +413,99 @@ Remember: The database contains detailed descriptions of EVERY image in textbook
     return llm, system_prompt
 
 
+# run_agent.py
+
+def run_agent_query(query: str) -> dict:
+    """
+    Callable function for API use.
+    Performs the same tasks as main(), but returns structured JSON instead of printing.
+    """
+    try:
+        llm, system_prompt = create_qa_system()
+        memory = EnhancedConversationMemory(max_history=15)
+
+        # Extract entities
+        entities = memory.extract_math_query_entities(query)
+
+        # Decide routing
+        use_math_tool = (
+            entities.get("subject") == "Math"
+            or entities.get("exercise_number")
+            or entities.get("example_number")
+            or entities.get("question_number")
+        )
+
+        # Route to correct search engine
+        if use_math_tool:
+            search_results = search_math_documents(query, memory_context={
+                "subjects_discussed": memory.subjects_discussed,
+                "grades_discussed": memory.grades_discussed,
+                "pages_mentioned": memory.pages_mentioned,
+                "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+            })
+        else:
+            search_results = search_school_documents(query, memory_context={
+                "subjects_discussed": memory.subjects_discussed,
+                "grades_discussed": memory.grades_discussed,
+                "pages_mentioned": memory.pages_mentioned,
+                "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+            })
+
+        # Build context
+        conversation_context = memory.get_smart_context_for_query(query)
+        context = f"""User Question: {query}
+
+{conversation_context}
+
+Database Search Results:
+{search_results}
+
+Based on the search results above and the conversation context, provide a clear and accurate answer.
+- For image questions, provide COMPLETE descriptions from IMAGE_DESCRIPTION results
+- Use conversation history and entity tracking to understand follow-up questions
+- Mention grade/subject when relevant
+- Always cite sources with [Source: filename, Page: X]"""
+
+        # Get LLM response
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=context)
+        ]
+        response = llm.invoke(messages)
+        answer = response.content
+
+        # Add to memory
+        memory.add_interaction(query, answer, search_results_count=len(search_results))
+
+        # Normalize sources
+        sources = []
+        for r in (search_results if isinstance(search_results, list) else []):
+            sources.append({
+                "source": r.get("pdf_source") or r.get("filename") or "unknown",
+                "page": r.get("page"),
+                "subject": r.get("subject") or entities.get("subject"),
+                "grade": r.get("grade") or entities.get("grade"),
+                "content_type": r.get("content_type")
+            })
+
+        return {
+            "answer": answer,
+            "sources": sources,
+            "intent": entities,
+            "debug": {
+                "use_math_tool": use_math_tool,
+                "results_count": len(search_results) if isinstance(search_results, list) else 0
+            }
+        }
+
+    except Exception as e:
+        return {
+            "answer": "❌ Error generating response",
+            "sources": [],
+            "intent": {},
+            "error": str(e)
+        }
+
 def main():
     """Main interactive loop with enhanced memory and grade/subject awareness."""
     
