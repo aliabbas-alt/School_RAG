@@ -67,46 +67,51 @@ class SupabaseVectorStore:
         self,
         chunks: List[Dict[str, Any]],
         embeddings: List[List[float]],
-        doc_metadata: DocumentMetadata
+        doc_metadata: DocumentMetadata,
+        table_name: Optional[str] = None   # NEW: allow override
     ) -> List[int]:
         """
         Store document chunks with their embeddings in Supabase.
-        Includes grade and subject metadata.
-        
+        Routes to math_documents if subject is Math, else documents.
+
         Args:
             chunks: List of chunk dictionaries with 'page_content' and 'metadata'
             embeddings: List of embedding vectors (one per chunk)
             doc_metadata: School-specific metadata including grade and subject
-            
+            table_name: Optional explicit table override
+
         Returns:
             List of inserted document IDs
-            
-        Raises:
-            ValueError: If chunk count doesn't match embedding count
-            Exception: If insertion fails
         """
         if len(chunks) != len(embeddings):
             raise ValueError(
                 f"Chunk count ({len(chunks)}) must match embedding count ({len(embeddings)})"
             )
-        
+
         print(f"📦 Preparing {len(chunks)} records for storage...")
-        
+
+        # --- NEW: subject-aware routing ---
+        if table_name is None:
+            if doc_metadata.subject and doc_metadata.subject.lower() == "math":
+                target_table = "math_documents"
+            else:
+                target_table = "documents"
+        else:
+            target_table = table_name
+
+        print(f"   📦 Target table: {target_table}")
+
         records = []
         for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings), 1):
-            # Extract chunk metadata
             chunk_meta = chunk.get("metadata", {}) or {}
-            
-            # Combine all metadata
+
             combined_metadata = {
                 **chunk_meta,
                 **(doc_metadata.custom_metadata or {})
             }
-            
-            # Remove fields that have dedicated columns
             for field in ['source', 'page', 'content_type', 'source_type', 'image_path']:
                 combined_metadata.pop(field, None)
-            
+
             record = {
                 "source": chunk_meta.get("source", "unknown"),
                 "page": chunk_meta.get("page"),
@@ -117,23 +122,21 @@ class SupabaseVectorStore:
                 "curriculum_type": doc_metadata.curriculum_type,
                 "document_type": doc_metadata.document_type,
                 "academic_year": doc_metadata.academic_year,
-                "grade": doc_metadata.grade,  # NEW
-                "subject": doc_metadata.subject,  # NEW
+                "grade": doc_metadata.grade,
+                "subject": doc_metadata.subject,
                 "content_type": chunk_meta.get("content_type", "text"),
                 "source_type": chunk_meta.get("source_type", "pdf_text_extraction"),
                 "image_path": chunk_meta.get("image_path")
             }
             records.append(record)
-            
-            # Progress indicator
+
             if idx % 100 == 0 or idx == len(chunks):
                 print(f"   Prepared {idx}/{len(chunks)} records...")
-        
-        # Batch insert all records
+
         print(f"☁️  Uploading to Supabase...")
         try:
-            response = self.client.table("documents").insert(records).execute()
-            
+            response = self.client.table(target_table).insert(records).execute()
+
             if hasattr(response, 'data') and response.data:
                 inserted_ids = [record["id"] for record in response.data]
                 print(f"✅ Successfully inserted {len(inserted_ids)} document chunks")
@@ -153,39 +156,33 @@ class SupabaseVectorStore:
         curriculum_type: Optional[str] = None,
         document_type: Optional[str] = None,
         academic_year: Optional[str] = None,
-        grade: Optional[int] = None,  # NEW
+        grade: Optional[int] = None,   # NEW
         subject: Optional[str] = None  # NEW
     ) -> List[Dict[str, Any]]:
         """
         Perform similarity search on stored embeddings with grade/subject filters.
-        
-        Args:
-            query_embedding: Query vector to search for
-            match_threshold: Minimum similarity score (0-1)
-            match_count: Maximum number of results
-            school_id: Filter by school (None = all schools)
-            curriculum_type: Filter by curriculum (None = all)
-            document_type: Filter by document type (None = all)
-            academic_year: Filter by academic year (None = all)
-            grade: Filter by grade level (None = all grades)
-            subject: Filter by subject (None = all subjects)
-            
-        Returns:
-            List of matching documents with similarity scores
+        Routes to match_math_documents if subject is Math, else match_documents.
         """
+
         # Build filter display
         filters = []
         if grade:
             filters.append(f"Grade {grade}")
         if subject:
             filters.append(subject)
-        
+
         filter_str = f" [{', '.join(filters)}]" if filters else ""
         print(f"🔍 Searching{filter_str} with threshold={match_threshold}, limit={match_count}")
-        
+
         try:
+            # --- NEW: subject-aware RPC routing ---
+            if subject and subject.lower() == "math":
+                rpc_fn = "match_math_documents"
+            else:
+                rpc_fn = "match_documents"
+
             response = self.client.rpc(
-                "match_documents",
+                rpc_fn,
                 {
                     "query_embedding": query_embedding,
                     "match_threshold": match_threshold,
@@ -194,14 +191,15 @@ class SupabaseVectorStore:
                     "filter_curriculum": curriculum_type,
                     "filter_document_type": document_type,
                     "filter_academic_year": academic_year,
-                    "filter_grade": grade,  # NEW
+                    "filter_grade": grade,   # NEW
                     "filter_subject": subject  # NEW
                 }
             ).execute()
-            
+
             results = response.data if hasattr(response, 'data') else []
-            print(f"✅ Found {len(results)} matching documents")
+            print(f"✅ Found {len(results)} matching documents from {rpc_fn}")
             return results
+
         except Exception as e:
             print(f"❌ Search error: {e}")
             raise
@@ -280,25 +278,31 @@ class SupabaseVectorStore:
         self,
         school_id: Optional[int] = None,
         curriculum_type: Optional[str] = None,
-        grade: Optional[int] = None,  # NEW
+        grade: Optional[int] = None,   # NEW
         subject: Optional[str] = None  # NEW
     ) -> List[Dict[str, Any]]:
         """
         List all unique source documents with their chunk counts.
-        
+        Routes to math_documents if subject is Math, else documents.
+
         Args:
             school_id: Optional school ID filter
             curriculum_type: Optional curriculum filter
             grade: Optional grade filter
             subject: Optional subject filter
-            
+
         Returns:
             List of source documents with metadata
         """
-        query = self.client.table("documents").select(
+
+        # --- NEW: subject-aware table selection ---
+        target_table = "math_documents" if subject and subject.lower() == "math" else "documents"
+        print(f"📄 Listing sources from table: {target_table}")
+
+        query = self.client.table(target_table).select(
             "source, school_id, curriculum_type, document_type, academic_year, grade, subject"
         )
-        
+
         if school_id is not None:
             query = query.eq("school_id", school_id)
         if curriculum_type is not None:
@@ -307,11 +311,10 @@ class SupabaseVectorStore:
             query = query.eq("grade", grade)
         if subject is not None:
             query = query.eq("subject", subject)
-        
+
         response = query.execute()
-        
+
         if hasattr(response, 'data'):
-            # Group by source and count
             sources = {}
             for row in response.data:
                 source = row['source']
@@ -327,7 +330,7 @@ class SupabaseVectorStore:
                         'chunk_count': 0
                     }
                 sources[source]['chunk_count'] += 1
-            
+
             return list(sources.values())
         return []
 

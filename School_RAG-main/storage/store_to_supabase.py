@@ -17,7 +17,6 @@ from storage.supabase_storage import SupabaseVectorStore
 # Load environment variables
 load_dotenv()
 
-
 def main():
     """Interactive script for storing embeddings with grade and subject metadata."""
     print("="*70)
@@ -109,7 +108,7 @@ def main():
             grade=grade,  # NEW
             subject=subject,  # NEW
             provider_name="openai",
-            model="text-embedding-3-small",
+            model=None,
             dimensions=None  # Use default 1536
         )
         

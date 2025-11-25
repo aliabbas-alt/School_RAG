@@ -7,7 +7,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from sympy import sympify, latex
 from ingest.pdf_loader import load_pdf
-from ingest.chunk_utils import chunk_documents
+from ingest.math_chunk_utils import chunk_math_semantic
 from openai import OpenAI
 import re
 import base64
@@ -98,20 +98,26 @@ def convert_image_to_latex(image_bytes: bytes) -> str:
         return f"Image-to-LaTeX failed: {str(e)}"
  
 def process_math_pdf(pdf_path: str, use_unstructured: bool, chunk_size: int, chunk_overlap: int):
-    """Process PDF text content and convert to LaTeX."""
+    """Process PDF text content and convert to LaTeX with semantic chunking."""
     docs = load_pdf(pdf_path, use_unstructured=use_unstructured)
-    text_chunks = chunk_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
- 
     math_chunks = []
-    for c in text_chunks:
-        math_chunks.append({
-            "page_content": convert_text_to_latex(c.page_content),
-            "metadata": {
-                **c.metadata,
+
+    for c in docs:
+        # Use semantic chunking instead of fixed-size
+        semantic_chunks = chunk_math_semantic(
+            c.page_content,
+            page=c.metadata.get("page"),
+            pdf_source=c.metadata.get("source")
+        )
+
+        for sc in semantic_chunks:
+            sc["page_content"] = convert_text_to_latex(sc["page_content"])
+            sc["metadata"].update({
                 "content_type": "math_text",
                 "math_format": "latex"
-            }
-        })
+            })
+            math_chunks.append(sc)
+
     return math_chunks
  
 def process_math_images(pdf_path: str, output_dir: str = "extracted_images", dpi: int = 200):

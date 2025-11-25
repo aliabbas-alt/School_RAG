@@ -281,10 +281,10 @@ def run_cli():
         try:
             # Get user input
             query = input("\n💬 You: ").strip()
-            
+                          
             if not query:
                 continue
-            
+
             # Handle commands
             if query.lower() in ["exit", "quit", "q"]:
                 print("\n👋 Goodbye!")
@@ -327,11 +327,92 @@ def run_cli():
                 filepath = agent.save_session()
                 print(f"✅ Session saved to: {filepath}")
                 continue
+
+            # Step 1: Extract entities from query
+            entities = memory.extract_math_query_entities(query)
+
+            # Step 2: Decide routing based on metadata
+            use_math_tool = False
+            if entities.get("subject") == "Math":
+                use_math_tool = True
+            elif entities.get("exercise_number") or entities.get("example_number") or entities.get("question_number"):
+                use_math_tool = True
+
+            # Step 3: Route to correct search engine
+            if use_math_tool:
+                print("Using MathSmartSearchEngine (metadata-driven)")
+                search_results = search_math_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
+            else:
+                print("Using General SmartSearchEngine")
+                search_results = search_school_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
             
             # Process query
             print("\n🔍 Processing your question...\n")
             
             answer = agent.run(query)
+            print("\n🔍 Searching database...")
+            
+            # Step 1: Search database (with automatic grade/subject filtering)
+            # search_results = search_school_documents(query)
+            # Detect if query is math-related
+            query_lower = query.lower()
+            math_keywords = [
+                "integral", "derivative", "equation", "function", "limit", "matrix",
+                "theorem", "proof", "latex", "symbol", "expression", "solve", "graph", "math"
+            ]
+
+            if any(kw in query.lower() for kw in math_keywords):
+                print("Using MathSmartSearchEngine")
+                search_results = search_math_documents(query, memory_context={
+                    "subjects_discussed": memory.subjects_discussed,
+                    "grades_discussed": memory.grades_discussed,
+                    "pages_mentioned": memory.pages_mentioned,
+                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
+                })
+            else:
+                print("Using General SmartSearchEngine")
+                search_results = search_school_documents(query, memory_context={...})
+        
+            # Step 2: Build context with smart memory
+            conversation_context = memory.get_smart_context_for_query(query)
+            
+            context = f"""User Question: {query}
+
+{conversation_context}
+
+Database Search Results:
+{search_results}
+
+Based on the search results above and the conversation context, provide a clear and accurate answer.
+- For image questions, provide COMPLETE descriptions from IMAGE_DESCRIPTION results
+- Use conversation history and entity tracking to understand follow-up questions
+- If user asks about "that page" or "next page", use entity context
+- Mention grade/subject when relevant to the answer
+- Always cite sources with [Source: filename, Page: X]"""
+
+            # Step 3: Get LLM response
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=context)
+            ]
+            
+            print("🤔 Generating answer...\n")
+            
+            response = llm.invoke(messages)
+            answer = response.content
+            
+            # Store in memory with metadata
+            memory.add_interaction(query, answer, search_results_count=30)
             
             # Display answer
             print("="*70)
