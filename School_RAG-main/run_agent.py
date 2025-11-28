@@ -26,6 +26,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from supabase_tool import search_school_documents, get_search_engine
+from math_search_tool import search_math_documents
 from memory.conversation_memory import EnhancedConversationMemory  # ← USES NEW ADVANCED MEMORY
 
 # Load environment
@@ -260,13 +261,13 @@ def run_cli():
     print("  'clear'            → Reset conversation memory")
     print("  'save'             → Save session to file")
     print("\n" + "="*70)
-    
+
     # Get school ID
     school_id = input("\n🏫 Enter School ID (or press Enter for demo): ").strip()
     if not school_id:
         school_id = "demo_school"
         print(f"   Using demo school: {school_id}")
-    
+
     # Initialize agent
     try:
         agent = SchoolRAGAgent(school_id=school_id)
@@ -275,13 +276,11 @@ def run_cli():
         print(f"\n❌ Error initializing system: {e}")
         print("   Check your .env file has OPENAI_API_KEY")
         return
-    
+
     # Main loop
     while True:
         try:
-            # Get user input
             query = input("\n💬 You: ").strip()
-                          
             if not query:
                 continue
 
@@ -289,26 +288,24 @@ def run_cli():
             if query.lower() in ["exit", "quit", "q"]:
                 print("\n👋 Goodbye!")
                 print(f"\n{agent.get_memory_summary()}")
-                
-                # Ask to save
                 save_prompt = input("\n💾 Save session? (y/n): ").strip().lower()
                 if save_prompt == 'y':
                     filepath = agent.save_session()
                     print(f"✅ Session saved to: {filepath}")
                 break
-            
+
             if query.lower() == "memory":
                 print("\n" + "="*70)
                 print(agent.get_memory_summary())
                 print("="*70)
                 continue
-            
+
             if query.lower() == "episodes":
                 print("\n" + "="*70)
                 print(agent.get_episode_summary())
                 print("="*70)
                 continue
-            
+
             if query.lower() == "metrics":
                 print("\n" + "="*70)
                 print("📊 PERFORMANCE METRICS")
@@ -317,119 +314,91 @@ def run_cli():
                 print(json.dumps(metrics, indent=2))
                 print("="*70)
                 continue
-            
+
             if query.lower() == "clear":
                 agent.clear_memory()
                 print("✅ Conversation memory cleared!")
                 continue
-            
+
             if query.lower() == "save":
                 filepath = agent.save_session()
                 print(f"✅ Session saved to: {filepath}")
                 continue
 
-            # Step 1: Extract entities from query
-            entities = memory.extract_math_query_entities(query)
+            # Step 1: Detect intent
+            engine = get_search_engine()
+            intent = engine.detect_query_intent(query)
 
-            # Step 2: Decide routing based on metadata
-            use_math_tool = False
-            if entities.get("subject") == "Math":
-                use_math_tool = True
-            elif entities.get("exercise_number") or entities.get("example_number") or entities.get("question_number"):
-                use_math_tool = True
+            # Step 2: Decide routing
+            use_math_tool = intent.get("subject") == "Math" or intent.get("example_number") or intent.get("pages")
 
             # Step 3: Route to correct search engine
+            memory_context = {
+                "subjects_discussed": agent.memory.subjects_discussed,
+                "grades_discussed": agent.memory.grades_discussed,
+                "pages_mentioned": agent.memory.pages_mentioned,
+                "last_topic": list(agent.memory.subjects_discussed)[-1] if agent.memory.subjects_discussed else ""
+            }
+
             if use_math_tool:
                 print("Using MathSmartSearchEngine (metadata-driven)")
-                search_results = search_math_documents(query, memory_context={
-                    "subjects_discussed": memory.subjects_discussed,
-                    "grades_discussed": memory.grades_discussed,
-                    "pages_mentioned": memory.pages_mentioned,
-                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
-                })
+                search_results = search_math_documents(query, memory_context=memory_context)
             else:
                 print("Using General SmartSearchEngine")
-                search_results = search_school_documents(query, memory_context={
-                    "subjects_discussed": memory.subjects_discussed,
-                    "grades_discussed": memory.grades_discussed,
-                    "pages_mentioned": memory.pages_mentioned,
-                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
-                })
-            
-            # Process query
+                search_results = search_school_documents(query, memory_context=memory_context, school_id=agent.school_id)
+
+            # Step 4: Run agent pipeline
             print("\n🔍 Processing your question...\n")
-            
             answer = agent.run(query)
-            print("\n🔍 Searching database...")
-            
-            # Step 1: Search database (with automatic grade/subject filtering)
-            # search_results = search_school_documents(query)
-            # Detect if query is math-related
-            query_lower = query.lower()
-            math_keywords = [
-                "integral", "derivative", "equation", "function", "limit", "matrix",
-                "theorem", "proof", "latex", "symbol", "expression", "solve", "graph", "math"
-            ]
 
-            if any(kw in query.lower() for kw in math_keywords):
-                print("Using MathSmartSearchEngine")
-                search_results = search_math_documents(query, memory_context={
-                    "subjects_discussed": memory.subjects_discussed,
-                    "grades_discussed": memory.grades_discussed,
-                    "pages_mentioned": memory.pages_mentioned,
-                    "last_topic": list(memory.topics_discussed)[-1] if memory.topics_discussed else ""
-                })
-            else:
-                print("Using General SmartSearchEngine")
-                search_results = search_school_documents(query, memory_context={...})
-        
-            # Step 2: Build context with smart memory
-            conversation_context = memory.get_smart_context_for_query(query)
-            
-            context = f"""User Question: {query}
-
-{conversation_context}
-
-Database Search Results:
-{search_results}
-
-Based on the search results above and the conversation context, provide a clear and accurate answer.
-- For image questions, provide COMPLETE descriptions from IMAGE_DESCRIPTION results
-- Use conversation history and entity tracking to understand follow-up questions
-- If user asks about "that page" or "next page", use entity context
-- Mention grade/subject when relevant to the answer
-- Always cite sources with [Source: filename, Page: X]"""
-
-            # Step 3: Get LLM response
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=context)
-            ]
-            
-            print("🤔 Generating answer...\n")
-            
-            response = llm.invoke(messages)
-            answer = response.content
-            
-            # Store in memory with metadata
-            memory.add_interaction(query, answer, search_results_count=30)
-            
-            # Display answer
+            # Step 5: Display answer
             print("="*70)
             print("🤖 Assistant:")
             print("="*70)
             print(answer)
             print("="*70)
-        
+
         except KeyboardInterrupt:
             print("\n\n👋 Interrupted. Goodbye!")
             print(f"\n{agent.get_memory_summary()}")
             break
-        
+
         except Exception as e:
             print(f"\n❌ Error: {e}")
             logger.error("CLI error", exc_info=True)
 
+# ============================================================================
+# API ENTRY POINT
+# ============================================================================
+
+def run_agent_api(query: str, school_id: str = "demo_school") -> str:
+    """
+    API-friendly entry point: runs the agent once per query,
+    reloads memory if available, saves updated memory, and returns the answer.
+    Designed for Node.js backend integration.
+    """
+    try:
+        # Initialize agent
+        agent = SchoolRAGAgent(school_id=school_id)
+
+        # Load previous memory if exists
+        session_file = f"sessions/{school_id}_latest.json"
+        try:
+            agent.memory.load_from_file(session_file)
+        except FileNotFoundError:
+            pass
+
+        # Run query through agent pipeline
+        answer = agent.run(query)
+
+        # Save updated memory for persistence across API calls
+        agent.save_session(session_file)
+
+        return answer
+
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}", exc_info=True)
+        return f"❌ API Error: {str(e)}"
 
 # ============================================================================
 # MAIN ENTRY POINT

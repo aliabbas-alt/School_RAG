@@ -314,54 +314,58 @@ class SmartSearchEngine:
         self,
         query: str,
         intent: Dict[str, Any],
-        school_id: str = None
+        school_id: str = None,
+        provider=None
     ) -> List[Dict[str, Any]]:
         """Perform semantic search with intent-aware configuration."""
         try:
-            # Generate embedding
-            query_result = self.provider.embed_texts([query])
-            
-            # FIX: Handle different response formats
+            if provider is None:
+                raise ValueError("Provider must be passed into semantic_search")
+
+            # Generate embedding using the passed provider
+            query_result = provider.embed_texts([query])
+
+            # Handle different response formats
             if hasattr(query_result, 'vectors') and query_result.vectors:
                 query_embedding = query_result.vectors[0]
             elif isinstance(query_result, list):
                 query_embedding = query_result[0]
             else:
                 raise ValueError("Unexpected embedding format")
-            
+
             # Adjust search parameters based on intent
-            if intent["is_image_query"]:
+            if intent.get("is_image_query"):
                 threshold = 0.20
                 limit = 40
-            elif intent["is_page_specific"]:
+            elif intent.get("is_page_specific"):
                 threshold = 0.30
                 limit = 20
-            elif intent["is_example_query"]:
+            elif intent.get("is_example_query"):
                 threshold = 0.28
                 limit = 25
             else:
                 threshold = self.default_threshold
                 limit = self.default_limit
-            
+
             # Perform search with filters
             results = self.vector_store.similarity_search(
                 query_embedding=query_embedding,
                 match_threshold=threshold,
                 match_count=limit,
-                school_id=school_id,  # FIX: Enforce school isolation
+                school_id=school_id,  # enforce school isolation
                 curriculum_type=None,
                 document_type=None,
                 academic_year=None,
                 grade=intent.get("grade"),
                 subject=intent.get("subject")
             )
-            
+
             # Mark as semantic search
             for result in results:
                 result['search_type'] = 'semantic'
-            
+
             return results
-        
+
         except Exception as e:
             logger.error(f"Semantic search error: {e}")
             return []
@@ -426,73 +430,70 @@ class SmartSearchEngine:
         return unique
     
     def search_with_intent(
-      self,
-      query: str,
-      intent: Dict[str, Any],
-      school_id: str = None
-  ) -> List[Dict[str, Any]]:
-      """
-      TRUE HYBRID SEARCH: Combines keyword and semantic search using RRF.
-      """
-      keyword_results = []
-      semantic_results = []
+        self,
+        query: str,
+        intent: Dict[str, Any],
+        school_id: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        TRUE HYBRID SEARCH: Combines keyword and semantic search using RRF.
+        """
+        keyword_results = []
+        semantic_results = []
 
-      # For example queries, try keyword search
-      if intent.get("is_example_query"):
-          example_num = intent["example_number"]
-          subject = intent.get("subject")
+        # For example queries, try keyword search
+        if intent.get("is_example_query"):
+            example_num = intent["example_number"]
+            subject = intent.get("subject")
 
-          logger.info(f"Performing keyword search for Example {example_num}...")
-          keyword_results = self.keyword_search_examples(example_num, subject, school_id)
+            logger.info(f"Performing keyword search for Example {example_num}...")
+            keyword_results = self.keyword_search_examples(example_num, subject, school_id)
 
-          if keyword_results:
-              logger.info(f"Found {len(keyword_results)} keyword results")
-          else:
-              logger.info("No keyword results, will rely on semantic search")
+            if keyword_results:
+                logger.info(f"Found {len(keyword_results)} keyword results")
+            else:
+                logger.info("No keyword results, will rely on semantic search")
 
-      # Dynamic provider selection
-      subject = intent.get("subject")
-      if subject and subject.lower() == "math":
-          provider = build_provider("openai", model="text-embedding-3-large")
-          logger.info("Using text-embedding-3-large for Math query")
-      else:
-          provider = build_provider("openai", model="text-embedding-3-small")
-          logger.info("Using text-embedding-3-small for non-Math query")
+        # Dynamic provider selection
+        subject = intent.get("subject")
+        if subject and subject.lower() == "math":
+            provider = build_provider("openai", model="text-embedding-3-large")
+            logger.info("Using text-embedding-3-large for Math query")
+        else:
+            provider = build_provider("openai", model="text-embedding-3-small")
+            logger.info("Using text-embedding-3-small for non-Math query")
 
-      query_result = provider.embed_texts([query])
-      query_embedding = query_result.vectors
+        # Perform semantic search with provider
+        semantic_results = self.semantic_search(query, intent, school_id, provider=provider)
+        logger.info(f"Found {len(semantic_results)} semantic results")
 
-      # Perform semantic search
-      semantic_results = self.semantic_search(query, intent, school_id)
-      logger.info(f"Found {len(semantic_results)} semantic results")
+        # If we have both, use RRF to merge
+        if keyword_results and semantic_results:
+            logger.info("Merging results using Reciprocal Rank Fusion...")
+            merged_results = self.reciprocal_rank_fusion(keyword_results, semantic_results)
+            return merged_results
 
-      # If we have both, use RRF to merge
-      if keyword_results and semantic_results:
-          logger.info("Merging results using Reciprocal Rank Fusion...")
-          merged_results = self.reciprocal_rank_fusion(keyword_results, semantic_results)
-          return merged_results
-
-      # Otherwise return whichever we have
-      return keyword_results or semantic_results
+        # Otherwise return whichever we have
+        return keyword_results or semantic_results
 
     def rerank_results(
-                      self, 
-                      results: List[Dict[str, Any]], 
-                      intent: Dict[str, Any]
-                  ) -> List[Dict[str, Any]]:
-                      """
-                      Re-rank results based on query intent and content type.
-                      Prioritizes vision-extracted math over OCR text.
-                      """
-                      if not results:
-                          return results
+        self, 
+        results: List[Dict[str, Any]], 
+        intent: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Re-rank results based on query intent and content type.
+        Prioritizes vision-extracted math over OCR text.
+        """
+        if not results:
+            return results
 
-                      # Separate content by type and quality
-                      vision_math = []
-                      text_math = []
-                      image_desc = []
-                      other = []
-        
+        # Separate content by type and quality
+        vision_math = []
+        text_math = []
+        image_desc = []
+        other = []
+
         for result in results:
             content_type = result.get('content_type', 'text')
             
@@ -509,7 +510,7 @@ class SmartSearchEngine:
                 image_desc.append(result)
             else:
                 other.append(result)
-        
+
         # Re-rank based on intent
         if intent.get("is_example_query"):
             return vision_math + text_math + image_desc + other
