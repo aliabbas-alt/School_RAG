@@ -127,8 +127,8 @@ You help students, teachers, and administrators with questions about textbooks, 
             # Get memory contexts
             memory_dict = self.memory.get_context_for_enhancement()
             
-            # ← CHANGED: Use attention-weighted context for best performance
-            memory_string = self.memory.get_attention_weighted_context(query, top_k=3)
+            # ← CHANGED: Use universal context with reference resolution
+            memory_string = self.memory.get_context_for_query(query, include_n=3)
             
             # Alternative options (uncomment to use):
             # memory_string = self.memory.get_temporal_weighted_context(query, decay_rate=0.1)
@@ -190,9 +190,14 @@ Always cite your sources with [Source: filename, Page: X, Grade: Y]."""
             "search_metrics": search_metrics,
             "conversation_metrics": {
                 "total_interactions": len(self.memory.history),
+                "total_queries": self.memory.metadata.get("total_queries", 0),
+                "recent_concepts": self.memory.current_concepts[-5:],
+                "last_two_topics": self.memory.last_two_topics,
                 "questions_asked": self.memory.question_count,
                 "clarifications": self.memory.clarification_count,
                 "subjects_discussed": list(self.memory.subjects_discussed),
+                "chapters_discussed": list(self.memory.chapters_mentioned),
+                "examples_mentioned": list(self.memory.examples_mentioned),
                 "grades_discussed": sorted(list(self.memory.grades_discussed)),
                 "episodes": len(self.memory.episodes),
                 "pages_referenced": len(self.memory.pages_mentioned)
@@ -255,7 +260,7 @@ def run_cli():
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("\nCommands:")
     print("  'exit', 'quit', 'q' → Exit system")
-    print("  'memory'           → Show conversation analytics")
+    print("  'memory'           → Show conversation summary")
     print("  'episodes'         → Show study sessions")
     print("  'metrics'          → Show performance metrics")
     print("  'clear'            → Reset conversation memory")
@@ -333,12 +338,7 @@ def run_cli():
             use_math_tool = intent.get("subject") == "Math" or intent.get("example_number") or intent.get("pages")
 
             # Step 3: Route to correct search engine
-            memory_context = {
-                "subjects_discussed": agent.memory.subjects_discussed,
-                "grades_discussed": agent.memory.grades_discussed,
-                "pages_mentioned": agent.memory.pages_mentioned,
-                "last_topic": list(agent.memory.subjects_discussed)[-1] if agent.memory.subjects_discussed else ""
-            }
+            memory_context = agent.memory.get_context_for_enhancement()
 
             if use_math_tool:
                 print("Using MathSmartSearchEngine (metadata-driven)")
